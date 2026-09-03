@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Windhover</string>
+    <string name="notification_channel_tracking">Location tracking</string>
+    <string name="notification_channel_alerts">Tracking alerts</string>
+    <string name="notification_title">Location tracking active</string>
+    <string name="notification_stop">Stop</string>
+    <string name="notification_resume_title">Tracking paused</string>
+    <string name="notification_resume_text">Android stopped the tracker in the background. Tap to resume.</string>
+</resources>
