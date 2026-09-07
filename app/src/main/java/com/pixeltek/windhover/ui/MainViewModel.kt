@@ -7,6 +7,7 @@ import com.pixeltek.windhover.Graph
 import com.pixeltek.windhover.data.LocationSample
 import com.pixeltek.windhover.data.TrackerSettings
 import com.pixeltek.windhover.data.Trip
+import com.pixeltek.windhover.data.MapStyle
 import com.pixeltek.windhover.data.UploadMode
 import com.pixeltek.windhover.service.TrackingService
 import kotlinx.coroutines.flow.SharingStarted
@@ -64,9 +65,14 @@ class MainViewModel : ViewModel() {
         owntracksDevice: String,
         maxAccuracyM: Float,
         retentionDays: Int,
+        mapStyle: MapStyle,
+        customStyleUrl: String,
     ) {
         viewModelScope.launch {
-            settingsRepo.update(serverUrl, authToken, uploadEnabled, uploadMode, owntracksUser, owntracksDevice, maxAccuracyM, retentionDays)
+            settingsRepo.update(
+                serverUrl, authToken, uploadEnabled, uploadMode, owntracksUser, owntracksDevice,
+                maxAccuracyM, retentionDays, mapStyle, customStyleUrl,
+            )
         }
     }
 

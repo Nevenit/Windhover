@@ -10,6 +10,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -28,9 +33,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.pixeltek.windhover.data.MapStyle
 import com.pixeltek.windhover.data.UploadMode
 import com.pixeltek.windhover.sync.UploadStatus
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(vm: MainViewModel, onOpenPermissions: () -> Unit) {
     val settings by vm.settings.collectAsStateWithLifecycle()
@@ -44,6 +51,9 @@ fun SettingsScreen(vm: MainViewModel, onOpenPermissions: () -> Unit) {
     var otDevice by remember(settings.owntracksDevice) { mutableStateOf(settings.owntracksDevice) }
     var maxAccuracy by remember(settings.maxAccuracyM) { mutableStateOf(settings.maxAccuracyM.toInt().toString()) }
     var retention by remember(settings.retentionDays) { mutableStateOf(settings.retentionDays.toString()) }
+    var mapStyle by remember(settings.mapStyle) { mutableStateOf(settings.mapStyle) }
+    var customStyleUrl by remember(settings.customStyleUrl) { mutableStateOf(settings.customStyleUrl) }
+    var styleMenuOpen by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
 
     Column(
@@ -107,6 +117,31 @@ fun SettingsScreen(vm: MainViewModel, onOpenPermissions: () -> Unit) {
             label = { Text("Keep samples for (days)") }, singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth(),
         )
+        Text("Map", style = MaterialTheme.typography.titleMedium)
+        ExposedDropdownMenuBox(expanded = styleMenuOpen, onExpandedChange = { styleMenuOpen = it }) {
+            OutlinedTextField(
+                value = mapStyle.label, onValueChange = {}, readOnly = true, label = { Text("Basemap style") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = styleMenuOpen) },
+                modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable),
+            )
+            ExposedDropdownMenu(expanded = styleMenuOpen, onDismissRequest = { styleMenuOpen = false }) {
+                MapStyle.entries.forEach { style ->
+                    DropdownMenuItem(text = { Text(style.label) }, onClick = { mapStyle = style; styleMenuOpen = false })
+                }
+            }
+        }
+        if (mapStyle == MapStyle.CUSTOM) {
+            OutlinedTextField(
+                value = customStyleUrl, onValueChange = { customStyleUrl = it }, label = { Text("MapLibre style JSON URL") },
+                placeholder = { Text("https://tiles.example.com/styles/basic.json") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        Text(
+            "Basemaps come from OpenFreeMap (OpenStreetMap data, free, no key). Tiles are fetched only while the map tab is open and cached for offline viewing.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+
         Button(
             onClick = {
                 vm.saveSettings(
@@ -115,6 +150,7 @@ fun SettingsScreen(vm: MainViewModel, onOpenPermissions: () -> Unit) {
                     owntracksUser = otUser, owntracksDevice = otDevice,
                     maxAccuracyM = maxAccuracy.toFloatOrNull() ?: 100f,
                     retentionDays = retention.toIntOrNull() ?: 30,
+                    mapStyle = mapStyle, customStyleUrl = customStyleUrl,
                 )
             },
             modifier = Modifier.fillMaxWidth(),

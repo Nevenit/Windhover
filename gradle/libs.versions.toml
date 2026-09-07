@@ -12,6 +12,7 @@ datastore = "1.2.1"
 playServicesLocation = "21.4.0"
 coroutines = "1.11.0"
 junit = "4.13.2"
+maplibre = "13.6.0"
 json = "20260814"
 
 [libraries]
@@ -34,6 +35,7 @@ play-services-location = { group = "com.google.android.gms", name = "play-servic
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "coroutines" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+maplibre-android-sdk = { group = "org.maplibre.gl", name = "android-sdk-opengl", version.ref = "maplibre" }
 json = { group = "org.json", name = "json", version.ref = "json" }
 
 [plugins]

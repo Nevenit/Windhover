@@ -30,12 +30,16 @@ driven by activity recognition and motion sensors, and sends the result only whe
 | Trip detection | A trip starts on "in vehicle" or 30 s above 25 km/h and ends after 5 min below 5 km/h. Distance, duration, max and average speed. |
 | Storage | Room database of samples and trips on the phone. Retention is configurable. |
 | Upload | Batched JSON to your endpoint, or OwnTracks messages to Home Assistant, live while moving and every 15 min otherwise. |
-| UI | Status, a tile-free trail map, history of samples and trips, settings, and guided permission setup. |
+| UI | Status, a MapLibre map with OpenFreeMap basemaps showing the trail and heading, history of samples and trips, settings, and guided permission setup. |
 
 ## Privacy
 
 - Nothing leaves the phone unless you enter a server URL. There are no analytics, no accounts,
-  no third-party SDKs beyond Google Play Services.
+  no third-party SDKs beyond Google Play Services and the MapLibre map renderer.
+- The map tab fetches basemap tiles from [OpenFreeMap](https://openfreemap.org) (OpenStreetMap
+  data, free, no key, no tracking cookies). Tile requests necessarily reveal the area you are
+  looking at to that server, and only happen while the map tab is open. Tiles are cached for
+  offline viewing. You can point the map at your own tile server in Settings.
 - Tracking is always visible: a persistent notification with a Stop action, and an on/off
   switch on the first screen. There is no hidden mode, and there will not be one.
 - Location, activity recognition and geofencing come from Google Play Services. On a stock
@@ -75,8 +79,10 @@ The setup screen walks through the permissions in the order Android requires:
 4. Notifications (Android 13+).
 5. Battery optimisation exemption. Without it, some manufacturers pause the service after a while.
 
-Then tap **Start tracking** on the Status tab. The map tab shows your trail on a plain white
-canvas: no tiles, no API key, pinch to zoom, "Follow me" and "Fit trail".
+Then tap **Start tracking** on the Status tab. The map tab shows your trail, accuracy disc and
+heading arrow on an OpenStreetMap basemap. "Follow me" keeps the camera on you, "Fit trail" frames
+everything stored. Settings offers six basemap styles, including dark ones, or a custom MapLibre
+style URL.
 
 ## Home Assistant
 
@@ -156,7 +162,7 @@ app/src/main/java/com/pixeltek/windhover/
   trip/       trip detector (pure Kotlin, unit tested)
   data/       Room entities and DAOs, DataStore settings, repository
   sync/       batch uploader and OwnTracks message builder
-  ui/         Compose screens and view model
+  ui/         Compose screens and view model (MapScreen wraps a MapLibre MapView)
   util/       geodesy helpers and permission checks
 ```
 
@@ -169,6 +175,7 @@ message format: `./gradlew testDebugUnitTest`.
 - Release signing and a Releases workflow.
 - A Play-Services-free build flavour for F-Droid.
 - Trip export as GPX.
+- Bundled offline basemap regions.
 
 ## Status
 

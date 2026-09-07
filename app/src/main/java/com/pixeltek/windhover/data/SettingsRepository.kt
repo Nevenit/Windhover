@@ -18,6 +18,23 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 
 enum class UploadMode { BATCH, OWNTRACKS }
 
+/** Basemap styles served by OpenFreeMap (free, no key, app use permitted), plus a custom style URL. */
+enum class MapStyle(val label: String, val url: String?) {
+    AUTO("Follow system theme", null),
+    LIBERTY("Liberty", "https://tiles.openfreemap.org/styles/liberty"),
+    BRIGHT("Bright", "https://tiles.openfreemap.org/styles/bright"),
+    POSITRON("Positron (light)", "https://tiles.openfreemap.org/styles/positron"),
+    DARK("Dark", "https://tiles.openfreemap.org/styles/dark"),
+    FIORD("Fiord (dark)", "https://tiles.openfreemap.org/styles/fiord"),
+    CUSTOM("Custom style URL", null);
+
+    fun resolve(darkTheme: Boolean, customUrl: String): String = when (this) {
+        AUTO -> if (darkTheme) DARK.url!! else LIBERTY.url!!
+        CUSTOM -> customUrl.trim().ifBlank { LIBERTY.url!! }
+        else -> url!!
+    }
+}
+
 data class TrackerSettings(
     /** Persisted so boot / watchdog can restart the service without user interaction. */
     val trackingEnabled: Boolean = false,
@@ -31,6 +48,8 @@ data class TrackerSettings(
     val maxAccuracyM: Float = 100f,
     val retentionDays: Int = 30,
     val deviceId: String = "",
+    val mapStyle: MapStyle = MapStyle.AUTO,
+    val customStyleUrl: String = "",
 )
 
 class SettingsRepository(context: Context) {
@@ -47,6 +66,8 @@ class SettingsRepository(context: Context) {
         val MAX_ACCURACY = floatPreferencesKey("max_accuracy_m")
         val RETENTION_DAYS = intPreferencesKey("retention_days")
         val DEVICE_ID = stringPreferencesKey("device_id")
+        val MAP_STYLE = stringPreferencesKey("map_style")
+        val CUSTOM_STYLE_URL = stringPreferencesKey("custom_style_url")
     }
 
     val flow: Flow<TrackerSettings> = store.data.map { p ->
@@ -61,6 +82,8 @@ class SettingsRepository(context: Context) {
             maxAccuracyM = p[Keys.MAX_ACCURACY] ?: 100f,
             retentionDays = p[Keys.RETENTION_DAYS] ?: 30,
             deviceId = p[Keys.DEVICE_ID] ?: "",
+            mapStyle = p[Keys.MAP_STYLE]?.let { m -> runCatching { MapStyle.valueOf(m) }.getOrNull() } ?: MapStyle.AUTO,
+            customStyleUrl = p[Keys.CUSTOM_STYLE_URL] ?: "",
         )
     }
 
@@ -79,6 +102,8 @@ class SettingsRepository(context: Context) {
         owntracksDevice: String,
         maxAccuracyM: Float,
         retentionDays: Int,
+        mapStyle: MapStyle,
+        customStyleUrl: String,
     ) {
         store.edit {
             it[Keys.SERVER_URL] = serverUrl.trim()
@@ -89,6 +114,8 @@ class SettingsRepository(context: Context) {
             it[Keys.OWNTRACKS_DEVICE] = owntracksDevice.trim()
             it[Keys.MAX_ACCURACY] = maxAccuracyM.coerceIn(5f, 5_000f)
             it[Keys.RETENTION_DAYS] = retentionDays.coerceIn(1, 3_650)
+            it[Keys.MAP_STYLE] = mapStyle.name
+            it[Keys.CUSTOM_STYLE_URL] = customStyleUrl.trim()
         }
     }
 

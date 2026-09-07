@@ -20,8 +20,8 @@ android {
         applicationId = "com.pixeltek.windhover"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
     }
 
     signingConfigs {
@@ -47,6 +47,17 @@ android {
     buildFeatures {
         compose = true
     }
+
+    // MapLibre (OpenGL ES build: Vulkan is the default artifact but crashes in the emulator and is
+    // patchy on older phones) carries ~12 MB of native code per ABI. Ship one APK per ABI plus a universal one.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
+            isUniversalApk = true
+        }
+    }
 }
 
 dependencies {
@@ -66,6 +77,7 @@ dependencies {
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.play.services.location)
+    implementation(libs.maplibre.android.sdk)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.play.services)
     testImplementation(libs.junit)
