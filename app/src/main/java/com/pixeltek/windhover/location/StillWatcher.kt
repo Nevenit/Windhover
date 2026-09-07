@@ -16,7 +16,8 @@ import java.util.concurrent.TimeUnit
 
 /**
  * While the phone is still we stop polling GPS and instead wait for one of two cheap wake-ups:
- * a 100 m geofence exit (handled by Play Services) or the hardware significant-motion sensor.
+ * a 150 m geofence exit (handled by Play Services) or the hardware significant-motion sensor.
+ * Indoors the geofence is noisy, so the service treats its exit as a hint and the sensor as proof.
  */
 class StillWatcher(private val context: Context, private val onMotion: () -> Unit) {
     private val geofencing = LocationServices.getGeofencingClient(context)
@@ -41,7 +42,7 @@ class StillWatcher(private val context: Context, private val onMotion: () -> Uni
     }
 
     @SuppressLint("MissingPermission")
-    fun arm(lat: Double, lon: Double, radiusM: Float = 100f) {
+    fun arm(lat: Double, lon: Double, radiusM: Float = 150f) {
         if (armed) return
         armed = true
         motionSensor?.let { sensorManager?.requestTriggerSensor(triggerListener, it) }

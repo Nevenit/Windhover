@@ -25,11 +25,13 @@ import com.pixeltek.windhover.location.MotionState
 import com.pixeltek.windhover.location.RawFix
 import com.pixeltek.windhover.location.SpeedEstimator
 import com.pixeltek.windhover.location.SpeedSource
+import com.pixeltek.windhover.location.StationaryAnchor
 import com.pixeltek.windhover.location.StillWatcher
 import com.pixeltek.windhover.location.TrackedFix
 import com.pixeltek.windhover.trip.TripDetector
 import com.pixeltek.windhover.util.Permissions
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -49,6 +51,7 @@ class TrackingService : LifecycleService() {
     private val filter = FixFilter()
     private val speedEstimator = SpeedEstimator()
     private val tripDetector = TripDetector()
+    private val anchor = StationaryAnchor()
 
     private var recognizedState = MotionState.UNKNOWN
     private var quietSinceMs: Long? = null
@@ -61,12 +64,14 @@ class TrackingService : LifecycleService() {
     private var lastLiveUploadMs = 0L
     private var foregroundOk = false
     private var liveSettings = TrackerSettings()
+    /** While set, a geofence exit has us polling at high accuracy to see whether we really moved. */
+    private var probeUntilMs = 0L
 
     override fun onCreate() {
         super.onCreate()
         engine = LocationEngine(this)
         activityRecognition = ActivityRecognitionManager(this)
-        stillWatcher = StillWatcher(this) { onMotionTrigger() }
+        stillWatcher = StillWatcher(this) { onSensorMotion() }
 
         if (!goForeground("Starting…")) return
         tracker.serviceRunning.value = true
@@ -115,7 +120,7 @@ class TrackingService : LifecycleService() {
                 stopSelf()
                 return START_NOT_STICKY
             }
-            ACTION_MOTION_TRIGGER -> onMotionTrigger()
+            ACTION_MOTION_TRIGGER -> onGeofenceExit()
             ACTION_ACTIVITY -> intent.getStringExtra(EXTRA_MOTION_STATE)
                 ?.let { runCatching { MotionState.valueOf(it) }.getOrNull() }
                 ?.let { onActivity(it) }
@@ -201,15 +206,37 @@ class TrackingService : LifecycleService() {
         estimate.bearingDeg?.let { lastBearing = it }
         updateQuietTimer(estimate.speedMps, raw.timeMs)
 
-        val motion = effectiveState(recognizedState, estimate.speedMps)
+        // While still, pin the reported position so indoor scatter does not walk the dot around.
+        var lat = raw.lat
+        var lon = raw.lon
+        var accuracy = raw.accuracyM
+        var speedMps = estimate.speedMps
+        if (recognizedState == MotionState.STILL) {
+            when (val pinned = anchor.observe(raw, estimate)) {
+                is StationaryAnchor.Result.Pinned -> {
+                    lat = pinned.lat
+                    lon = pinned.lon
+                    accuracy = pinned.accuracyM
+                    speedMps = 0f
+                }
+                is StationaryAnchor.Result.Released -> {
+                    Log.d(TAG, "Anchor released: ${pinned.reason}")
+                    setRecognized(MotionState.MOVING)
+                }
+            }
+        } else {
+            anchor.clear()
+        }
+
+        val motion = effectiveState(recognizedState, speedMps)
         if (motion != tracker.motionState.value) {
             tracker.motionState.value = motion
             reconsiderProfile()
         }
 
         val fix = TrackedFix(
-            timeMs = raw.timeMs, lat = raw.lat, lon = raw.lon, altitudeM = raw.altitudeM,
-            accuracyM = raw.accuracyM, speedMps = estimate.speedMps, speedSource = estimate.source,
+            timeMs = raw.timeMs, lat = lat, lon = lon, altitudeM = raw.altitudeM,
+            accuracyM = accuracy, speedMps = speedMps, speedSource = estimate.source,
             rawSpeedMps = raw.speedMps, speedAccuracyMps = raw.speedAccuracyMps, bearingDeg = lastBearing,
             motion = motion, provider = raw.provider, isMock = raw.isMock, batteryPct = batteryPercent(),
         )
@@ -248,10 +275,30 @@ class TrackingService : LifecycleService() {
         setRecognized(state)
     }
 
-    private fun onMotionTrigger() {
-        Log.d(TAG, "Motion trigger while ${recognizedState.label}")
+    /** The significant-motion sensor is hardware evidence: release the anchor and start searching. */
+    private fun onSensorMotion() {
+        Log.d(TAG, "Significant motion while ${recognizedState.label}")
         if (recognizedState == MotionState.STILL || recognizedState == MotionState.UNKNOWN) {
             setRecognized(MotionState.MOVING)
+        }
+    }
+
+    /**
+     * A geofence exit can be indoor scatter, so it is only a hint: poll at high accuracy for a
+     * while and let the anchor decide from the fixes. If nothing coherent shows up, go back to sleep.
+     */
+    private fun onGeofenceExit() {
+        if (recognizedState != MotionState.STILL) return
+        Log.d(TAG, "Geofence exit while still; probing")
+        probeUntilMs = SystemClock.elapsedRealtime() + PROBE_MS
+        reconsiderProfile(force = true)
+        lifecycleScope.launch {
+            delay(PROBE_MS)
+            if (recognizedState == MotionState.STILL) {
+                // Re-centre the fence on the anchor; the next still fix re-arms it.
+                stillWatcher.disarm()
+                reconsiderProfile(force = true)
+            }
         }
     }
 
@@ -259,6 +306,8 @@ class TrackingService : LifecycleService() {
         recognizedState = state
         if (state != MotionState.STILL) {
             quietSinceMs = null
+            probeUntilMs = 0L
+            anchor.clear()
             stillWatcher.disarm()
         }
         tripDetector.onMotion(state)?.let { event -> lifecycleScope.launch { handleTripEvent(event) } }
@@ -271,7 +320,9 @@ class TrackingService : LifecycleService() {
     }
 
     private fun reconsiderProfile(force: Boolean = false) {
-        val profile = LocationProfile.forState(tracker.motionState.value, tracker.uiVisible.value)
+        val base = LocationProfile.forState(tracker.motionState.value, tracker.uiVisible.value)
+        val probing = base == LocationProfile.STILL && SystemClock.elapsedRealtime() < probeUntilMs
+        val profile = if (probing) LocationProfile.SEARCHING else base
         if (force || profile != tracker.profile.value) {
             tracker.profile.value = profile
             engine.applyProfile(profile)
@@ -344,6 +395,7 @@ class TrackingService : LifecycleService() {
 
         private const val NOTIFICATION_THROTTLE_MS = 5_000L
         private const val QUIET_TO_STILL_MS = 3 * 60_000L
+        private const val PROBE_MS = 2 * 60_000L
         private const val LIVE_GAP_BATCH_MS = 2_000L
         /** Every message becomes a Home Assistant recorder row, so be gentler there. */
         private const val LIVE_GAP_OWNTRACKS_MS = 5_000L

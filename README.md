@@ -23,7 +23,8 @@ driven by activity recognition and motion sensors, and sends the result only whe
 | Foreground service | Sticky, restarted after reboot, app update, or being killed. Always shows a notification. |
 | Adaptive profiles | Driving 1 s · running or cycling 3 s · walking 5 s · still 60 s on balanced power · 1 s while the app is open. |
 | Activity recognition | Still, walking, running, cycling and in-vehicle transitions select the profile. |
-| Still watcher | While parked: a 100 m geofence exit or the significant-motion sensor wakes the tracker. |
+| Still watcher | While parked: a 150 m geofence exit or the significant-motion sensor wakes the tracker. |
+| Stationary anchor | While still, the reported position is pinned so indoor Wi-Fi scatter does not walk the dot around. Released by activity recognition, the motion sensor, chipset speed, or three coherent fixes away from the anchor. |
 | Fix filter | Drops poor-accuracy, stale, mock and physically impossible fixes. |
 | Speed estimator | Chipset Doppler speed when its accuracy is good, otherwise distance over time gated by GPS noise, smoothed. |
 | Trip detection | A trip starts on "in vehicle" or 30 s above 25 km/h and ends after 5 min below 5 km/h. Distance, duration, max and average speed. |
