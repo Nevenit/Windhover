@@ -4,19 +4,29 @@ import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.util.Log
 import com.google.android.gms.location.ActivityRecognition
 import com.google.android.gms.location.ActivityTransition
 import com.google.android.gms.location.ActivityTransitionRequest
 import com.google.android.gms.location.DetectedActivity
+import com.pixeltek.windhover.util.DiagLog
 
-/** Subscribes to activity transitions (still / walking / running / cycling / in vehicle). */
+/**
+ * Two subscriptions: transitions (instant, only fire on change) and a periodic "most probable
+ * activity" every minute, so the service can re-learn that the phone is still even when it
+ * changed state on its own and no transition will ever come.
+ */
 class ActivityRecognitionManager(private val context: Context) {
     private val client = ActivityRecognition.getClient(context)
 
-    private val pendingIntent: PendingIntent = PendingIntent.getBroadcast(
+    private val transitionIntent: PendingIntent = PendingIntent.getBroadcast(
         context, 1,
-        Intent(context, ActivityTransitionReceiver::class.java).setAction(ActivityTransitionReceiver.ACTION),
+        Intent(context, ActivityTransitionReceiver::class.java).setAction(ActivityTransitionReceiver.ACTION_TRANSITION),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+    )
+
+    private val periodicIntent: PendingIntent = PendingIntent.getBroadcast(
+        context, 3,
+        Intent(context, ActivityTransitionReceiver::class.java).setAction(ActivityTransitionReceiver.ACTION_PERIODIC),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
     )
 
@@ -37,17 +47,22 @@ class ActivityRecognitionManager(private val context: Context) {
                     .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_EXIT).build(),
             )
         }
-        client.requestActivityTransitionUpdates(ActivityTransitionRequest(transitions), pendingIntent)
-            .addOnSuccessListener { Log.d(TAG, "Activity transitions registered") }
-            .addOnFailureListener { Log.w(TAG, "Activity transitions failed", it) }
+        client.requestActivityTransitionUpdates(ActivityTransitionRequest(transitions), transitionIntent)
+            .addOnSuccessListener { DiagLog.d(TAG, "Activity transitions registered") }
+            .addOnFailureListener { DiagLog.w(TAG, "Activity transitions failed", it) }
+        client.requestActivityUpdates(PERIODIC_INTERVAL_MS, periodicIntent)
+            .addOnSuccessListener { DiagLog.d(TAG, "Periodic activity updates registered") }
+            .addOnFailureListener { DiagLog.w(TAG, "Periodic activity updates failed", it) }
     }
 
     @SuppressLint("MissingPermission")
     fun stop() {
-        client.removeActivityTransitionUpdates(pendingIntent)
+        client.removeActivityTransitionUpdates(transitionIntent)
+        client.removeActivityUpdates(periodicIntent)
     }
 
     private companion object {
         const val TAG = "ActivityRecognition"
+        const val PERIODIC_INTERVAL_MS = 60_000L
     }
 }

@@ -21,10 +21,11 @@ driven by activity recognition and motion sensors, and sends the result only whe
 | Piece | What it does |
 |---|---|
 | Foreground service | Sticky, restarted after reboot, app update, or being killed. Always shows a notification. |
-| Adaptive profiles | Driving 1 s · running or cycling 3 s · walking 5 s · still 60 s on balanced power · 1 s while the app is open. |
-| Activity recognition | Still, walking, running, cycling and in-vehicle transitions select the profile. |
-| Still watcher | While parked: a 150 m geofence exit or the significant-motion sensor wakes the tracker. |
-| Stationary anchor | While still, the reported position is pinned so indoor Wi-Fi scatter does not walk the dot around. Released by activity recognition, the motion sensor, chipset speed, or three coherent fixes away from the anchor. |
+| Adaptive profiles | Driving 1 s · running or cycling 3 s · walking 5 s (15 s balanced indoors) · still 60 s on balanced power · 1 s while the app is open. |
+| Activity recognition | Still, walking, running, cycling and in-vehicle transitions select the profile, with a once-a-minute confirmation so "still" is re-learned without a transition. |
+| Motion sensors | The significant-motion sensor and the batched step detector wake the tracker from still; a long silence from both says it has settled again. |
+| Stationary anchor | While still, the reported position is pinned so indoor Wi-Fi scatter does not walk the dot around. Released by activity recognition, the motion or step sensors, chipset speed, or fixes clustering at a new place. |
+| Indoor walking | When walking and GPS fixes stay poor, the profile drops to cheap 15 s network fixes instead of hammering the GPS chip. |
 | Fix filter | Drops poor-accuracy, stale, mock and physically impossible fixes. |
 | Speed estimator | Chipset Doppler speed when its accuracy is good, otherwise distance over time gated by GPS noise, smoothed. |
 | Trip detection | A trip starts on "in vehicle" or 30 s above 25 km/h and ends after 5 min below 5 km/h. Distance, duration, max and average speed. |
@@ -46,7 +47,8 @@ driven by activity recognition and motion sensors, and sends the result only whe
   phone that adds nothing Google did not already have. On GrapheneOS with sandboxed Play, turn on
   "Reroute location requests to OS", deny Play Services location and network, and grant it
   physical activity: the only Google code left in the loop is the on-device motion classifier.
-  Geofencing will fail in that setup and Windhover falls back to the motion sensor and 60 s polls.
+  GrapheneOS's location layer also does not replace a re-registered request the way Google's does;
+  Windhover removes before re-requesting, so it behaves the same on both.
 - A Play-Services-free flavour is on the roadmap. It would lose activity classification and
   indoor positioning but make an F-Droid build possible.
 
@@ -140,6 +142,13 @@ already running for other apps, so the marginal cost is close to zero. Driving r
 comparable to navigation with the screen off, for the length of the trip. A day with a lot of
 walking costs the most, since walking runs 5 s fixes throughout. Android's per-app battery screen
 gives you the real number after a couple of days.
+
+## Diagnostics
+
+**Settings → Diagnostics → Export diagnostics** shares a zip containing every stored sample and
+trip as CSV, your settings with the token removed, device and permission info, and the app's own
+rolling log. Attach it to a bug report. Nothing leaves the phone until you pick an app in the
+share sheet.
 
 ## Emulator testing
 

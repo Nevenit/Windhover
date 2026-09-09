@@ -36,6 +36,9 @@ interface SampleDao {
     @Query("SELECT COUNT(*) FROM samples WHERE uploaded = 0")
     fun unsyncedCount(): Flow<Int>
 
+    @Query("SELECT * FROM samples WHERE id > :afterId ORDER BY id ASC LIMIT :limit")
+    suspend fun page(afterId: Long, limit: Int): List<LocationSample>
+
     @Query("DELETE FROM samples WHERE timeMs < :beforeMs")
     suspend fun deleteOlderThan(beforeMs: Long): Int
 
@@ -53,6 +56,9 @@ interface TripDao {
 
     @Query("SELECT * FROM trips ORDER BY startTimeMs DESC LIMIT :limit")
     fun recent(limit: Int): Flow<List<Trip>>
+
+    @Query("SELECT * FROM trips ORDER BY startTimeMs ASC")
+    suspend fun all(): List<Trip>
 
     @Query("DELETE FROM trips")
     suspend fun deleteAll()

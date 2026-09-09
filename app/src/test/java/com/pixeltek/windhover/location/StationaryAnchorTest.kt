@@ -26,6 +26,7 @@ class StationaryAnchorTest {
         val scatter = listOf(
             220.0 to -180.0, -260.0 to 90.0, 40.0 to 310.0, -150.0 to -240.0, 300.0 to 20.0,
             -30.0 to -60.0, 190.0 to 250.0, -280.0 to -110.0, 120.0 to -290.0, 10.0 to 15.0,
+            250.0 to 200.0, 270.0 to 230.0, -200.0 to 240.0, 260.0 to -210.0, 240.0 to 190.0,
         )
         scatter.forEachIndexed { i, (n, e) ->
             val r = a.observe(fix((i + 1) * 60_000L, n, e, 60f), derived)
@@ -38,14 +39,24 @@ class StationaryAnchorTest {
     }
 
     @Test
-    fun `walking away releases after three coherent far fixes`() {
+    fun `moving and settling somewhere else releases after three clustered fixes`() {
         val a = StationaryAnchor()
         a.observe(fix(0, 0.0, 0.0, 10f), derived)
-        assertTrue(a.observe(fix(60_000, 0.0, 80.0, 10f), derived) is StationaryAnchor.Result.Pinned)
-        assertTrue(a.observe(fix(120_000, 0.0, 160.0, 10f), derived) is StationaryAnchor.Result.Pinned)
-        val r = a.observe(fix(180_000, 0.0, 240.0, 10f), derived)
+        assertTrue(a.observe(fix(60_000, 0.0, 400.0, 10f), derived) is StationaryAnchor.Result.Pinned)
+        assertTrue(a.observe(fix(120_000, 5.0, 405.0, 10f), derived) is StationaryAnchor.Result.Pinned)
+        val r = a.observe(fix(180_000, -3.0, 398.0, 10f), derived)
         assertTrue(r is StationaryAnchor.Result.Released)
         assertNull(a.anchor)
+    }
+
+    @Test
+    fun `a steady walk away is left to the sensors, positions alone do not release`() {
+        // 80 m per minute, which at 60 s intervals is indistinguishable from scatter by position alone.
+        val a = StationaryAnchor()
+        a.observe(fix(0, 0.0, 0.0, 10f), derived)
+        for (i in 1..5) {
+            assertTrue(a.observe(fix(i * 60_000L, 0.0, i * 80.0, 10f), derived) is StationaryAnchor.Result.Pinned)
+        }
     }
 
     @Test

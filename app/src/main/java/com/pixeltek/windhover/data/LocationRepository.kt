@@ -18,6 +18,8 @@ class LocationRepository(private val samples: SampleDao, private val trips: Trip
     suspend fun latestUnsynced(): LocationSample? = samples.latestUnsynced()
     suspend fun markUploadedUpTo(upToMs: Long) = samples.markUploadedUpTo(upToMs)
     suspend fun pruneOlderThan(cutoffMs: Long): Int = samples.deleteOlderThan(cutoffMs)
+    suspend fun samplesPage(afterId: Long, limit: Int): List<LocationSample> = samples.page(afterId, limit)
+    suspend fun allTrips(): List<Trip> = trips.all()
 
     suspend fun startTrip(t: TripProgress): Long = trips.insert(t.toEntity(id = 0, ended = false))
 

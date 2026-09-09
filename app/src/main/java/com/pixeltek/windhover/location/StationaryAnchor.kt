@@ -7,17 +7,17 @@ import kotlin.math.roundToInt
  * While the phone is still, indoor fixes scatter over hundreds of metres. This pins the reported
  * position to an anchor and only lets go on real evidence of movement:
  *  - chipset (Doppler) speed on consecutive fixes, which is independent of position noise,
- *  - or several consecutive fixes that are all away from the anchor AND consistent with each
- *    other. Noise scatters in every direction; movement forms a coherent track.
- * Activity recognition and the significant-motion sensor release it from outside via [clear].
+ *  - or several consecutive fixes that all cluster at one new place away from the anchor, i.e. the
+ *    phone moved and settled somewhere else. Noise scatters in every direction; it never clusters.
+ * Walking away is NOT detected here on purpose: indoor scatter at 60 s intervals looks exactly like
+ * a slow walk. Activity recognition, the step detector and the significant-motion sensor own that
+ * and release the anchor from outside via [clear].
  */
 class StationaryAnchor(
     private val releaseSpeedMps: Float = 2f,
     private val speedHitsToRelease: Int = 2,
     private val farFixesToRelease: Int = 3,
     private val marginM: Float = 20f,
-    /** Allowance for genuine travel between two "far" fixes when judging whether they agree. */
-    private val travelAllowanceMps: Float = 3f,
 ) {
     sealed class Result {
         data class Pinned(val lat: Double, val lon: Double, val accuracyM: Float) : Result()
@@ -60,7 +60,7 @@ class StationaryAnchor(
         if (previous != null && !agrees(previous, fix)) farFixes.clear()
         farFixes.addLast(fix)
         if (farFixes.size >= farFixesToRelease) {
-            return release("$farFixesToRelease consistent fixes ${distance.roundToInt()} m from anchor")
+            return release("settled ${distance.roundToInt()} m from anchor ($farFixesToRelease clustered fixes)")
         }
         return pinned()
     }
@@ -71,11 +71,8 @@ class StationaryAnchor(
         farFixes.clear()
     }
 
-    private fun agrees(a: RawFix, b: RawFix): Boolean {
-        val dtS = ((b.timeMs - a.timeMs) / 1000f).coerceAtLeast(0f)
-        val allowance = a.accuracyM + b.accuracyM + marginM + dtS * travelAllowanceMps
-        return Geo.distanceM(a.lat, a.lon, b.lat, b.lon) <= allowance
-    }
+    private fun agrees(a: RawFix, b: RawFix): Boolean =
+        Geo.distanceM(a.lat, a.lon, b.lat, b.lon) <= a.accuracyM + b.accuracyM + marginM
 
     private fun pinned(): Result.Pinned = anchor!!.let { Result.Pinned(it.lat, it.lon, it.accuracyM) }
 

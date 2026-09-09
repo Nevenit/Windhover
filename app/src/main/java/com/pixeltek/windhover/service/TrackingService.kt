@@ -9,7 +9,6 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
-import android.util.Log
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
@@ -23,21 +22,27 @@ import com.pixeltek.windhover.location.LocationEngine
 import com.pixeltek.windhover.location.LocationProfile
 import com.pixeltek.windhover.location.MotionState
 import com.pixeltek.windhover.location.RawFix
+import com.pixeltek.windhover.location.SettleDetector
 import com.pixeltek.windhover.location.SpeedEstimator
 import com.pixeltek.windhover.location.SpeedSource
 import com.pixeltek.windhover.location.StationaryAnchor
+import com.pixeltek.windhover.location.StepMonitor
 import com.pixeltek.windhover.location.StillWatcher
 import com.pixeltek.windhover.location.TrackedFix
 import com.pixeltek.windhover.trip.TripDetector
+import com.pixeltek.windhover.util.DiagLog
 import com.pixeltek.windhover.util.Permissions
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
- * The always-on foreground service. Owns the location engine, activity recognition, the still
- * watcher and the trip detector, and writes every accepted fix to the database.
+ * The always-on foreground service. Owns the location engine, activity recognition, the motion
+ * and step sensors, the stationary anchor and the trip detector, and writes every accepted fix.
+ *
+ * Motion state comes from three places, in order of trust: hardware sensors (significant motion,
+ * steps), activity recognition (transitions plus a periodic confirmation), and finally the fixes
+ * themselves, which indoors are the least reliable signal of all.
  */
 class TrackingService : LifecycleService() {
 
@@ -47,14 +52,15 @@ class TrackingService : LifecycleService() {
 
     private lateinit var engine: LocationEngine
     private lateinit var activityRecognition: ActivityRecognitionManager
-    private lateinit var stillWatcher: StillWatcher
+    private lateinit var motionWatcher: StillWatcher
+    private lateinit var stepMonitor: StepMonitor
     private val filter = FixFilter()
     private val speedEstimator = SpeedEstimator()
     private val tripDetector = TripDetector()
     private val anchor = StationaryAnchor()
+    private val settle = SettleDetector()
 
     private var recognizedState = MotionState.UNKNOWN
-    private var quietSinceMs: Long? = null
     private var lastBearing: Float? = null
     private var lastNotificationMs = 0L
     private var lastNotifiedState: MotionState? = null
@@ -64,14 +70,17 @@ class TrackingService : LifecycleService() {
     private var lastLiveUploadMs = 0L
     private var foregroundOk = false
     private var liveSettings = TrackerSettings()
-    /** While set, a geofence exit has us polling at high accuracy to see whether we really moved. */
-    private var probeUntilMs = 0L
+    private var indoors = false
+    private var poorFixStreak = 0
+    private var duplicateRejects = 0
+    private var lastDuplicateLogMs = 0L
 
     override fun onCreate() {
         super.onCreate()
         engine = LocationEngine(this)
         activityRecognition = ActivityRecognitionManager(this)
-        stillWatcher = StillWatcher(this) { onSensorMotion() }
+        motionWatcher = StillWatcher(this) { onSensorMotion() }
+        stepMonitor = StepMonitor(this) { recent -> onSteps(recent) }
 
         if (!goForeground("Starting…")) return
         tracker.serviceRunning.value = true
@@ -103,11 +112,15 @@ class TrackingService : LifecycleService() {
 
         if (Permissions.hasActivityRecognition(this)) {
             activityRecognition.start()
+            stepMonitor.start()
         } else {
-            Log.w(TAG, "Activity recognition permission missing; using speed-only motion detection")
+            DiagLog.w(TAG, "Activity recognition permission missing; motion detection is degraded")
         }
+        DiagLog.i(
+            TAG,
+            "Tracking started (motion sensor=${motionWatcher.available}, step detector=${stepMonitor.available})",
+        )
         reconsiderProfile(force = true)
-        Log.i(TAG, "Tracking started")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -120,10 +133,13 @@ class TrackingService : LifecycleService() {
                 stopSelf()
                 return START_NOT_STICKY
             }
-            ACTION_MOTION_TRIGGER -> onGeofenceExit()
-            ACTION_ACTIVITY -> intent.getStringExtra(EXTRA_MOTION_STATE)
-                ?.let { runCatching { MotionState.valueOf(it) }.getOrNull() }
-                ?.let { onActivity(it) }
+            ACTION_ACTIVITY -> {
+                val state = intent.getStringExtra(EXTRA_MOTION_STATE)
+                    ?.let { runCatching { MotionState.valueOf(it) }.getOrNull() }
+                if (state != null) {
+                    onActivity(state, intent.getIntExtra(EXTRA_CONFIDENCE, 100), intent.getBooleanExtra(EXTRA_PERIODIC, false))
+                }
+            }
         }
         return START_STICKY
     }
@@ -132,7 +148,8 @@ class TrackingService : LifecycleService() {
         if (foregroundOk) {
             engine.stop()
             activityRecognition.stop()
-            stillWatcher.disarm()
+            motionWatcher.disarm()
+            stepMonitor.stop()
         }
         val tripId = currentTripId
         val trip = tracker.currentTrip.value
@@ -143,7 +160,7 @@ class TrackingService : LifecycleService() {
         tracker.currentTrip.value = null
         tracker.serviceRunning.value = false
         tracker.profile.value = null
-        Log.i(TAG, "Tracking stopped")
+        DiagLog.i(TAG, "Tracking stopped")
         super.onDestroy()
     }
 
@@ -160,7 +177,7 @@ class TrackingService : LifecycleService() {
             true
         } catch (e: Exception) {
             // SecurityException (permission revoked) or ForegroundServiceStartNotAllowedException.
-            Log.e(TAG, "startForeground failed", e)
+            DiagLog.w(TAG, "startForeground failed", e)
             tracker.lastError.value = "Could not start tracking: ${e.message ?: e.javaClass.simpleName}"
             stopSelf()
             false
@@ -196,7 +213,7 @@ class TrackingService : LifecycleService() {
             is FixFilter.Result.Reject -> {
                 tracker.rejectedFixes.value += 1
                 tracker.lastRejectReason.value = verdict.reason
-                Log.d(TAG, "Rejected fix: ${verdict.reason}")
+                logRejection(verdict.reason)
                 return
             }
             FixFilter.Result.Accept -> Unit
@@ -204,7 +221,14 @@ class TrackingService : LifecycleService() {
 
         val estimate = speedEstimator.update(raw)
         estimate.bearingDeg?.let { lastBearing = it }
-        updateQuietTimer(estimate.speedMps, raw.timeMs)
+        updateIndoors(raw.accuracyM)
+
+        if (recognizedState != MotionState.STILL &&
+            settle.observe(raw, estimate, stepMonitor.lastStepMs, stepMonitor.available)
+        ) {
+            DiagLog.d(TAG, "Settled: ${settle.reason}")
+            setRecognized(MotionState.STILL)
+        }
 
         // While still, pin the reported position so indoor scatter does not walk the dot around.
         var lat = raw.lat
@@ -220,7 +244,7 @@ class TrackingService : LifecycleService() {
                     speedMps = 0f
                 }
                 is StationaryAnchor.Result.Released -> {
-                    Log.d(TAG, "Anchor released: ${pinned.reason}")
+                    DiagLog.d(TAG, "Anchor released: ${pinned.reason}")
                     setRecognized(MotionState.MOVING)
                 }
             }
@@ -245,9 +269,24 @@ class TrackingService : LifecycleService() {
         tripDetector.onFix(fix.timeMs, fix.lat, fix.lon, fix.speedMps, fix.accuracyM)?.let { handleTripEvent(it) }
         repo.insertSample(fix, currentTripId)
 
-        if (motion == MotionState.STILL) stillWatcher.arm(fix.lat, fix.lon) else stillWatcher.disarm()
+        if (motion == MotionState.STILL) motionWatcher.arm() else motionWatcher.disarm()
         updateNotification(fix)
-        maybeLiveUpload(fix)
+        maybeLiveUpload()
+    }
+
+    /** Duplicate deliveries can arrive in floods; summarise them instead of logging each one. */
+    private fun logRejection(reason: String) {
+        if (!reason.startsWith("out of order")) {
+            DiagLog.d(TAG, "Rejected fix: $reason")
+            return
+        }
+        duplicateRejects++
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastDuplicateLogMs >= 60_000L) {
+            DiagLog.d(TAG, "Rejected $duplicateRejects duplicate or out-of-order fixes in the last minute")
+            duplicateRejects = 0
+            lastDuplicateLogMs = now
+        }
     }
 
     /** Speed is ground truth when it is high; activity recognition fills in the rest. */
@@ -257,58 +296,52 @@ class TrackingService : LifecycleService() {
         else -> recognized
     }
 
-    /** Fallback still-detection when activity recognition is slow, denied or unavailable. */
-    private fun updateQuietTimer(speedMps: Float, timeMs: Long) {
-        if (speedMps < 0.5f) {
-            val since = quietSinceMs ?: timeMs.also { quietSinceMs = it }
-            if (timeMs - since >= QUIET_TO_STILL_MS && recognizedState != MotionState.STILL) {
-                Log.d(TAG, "No movement for ${QUIET_TO_STILL_MS / 60_000} min; treating as still")
-                setRecognized(MotionState.STILL)
-            }
-        } else {
-            quietSinceMs = null
+    /** Three poor fixes in a row means GPS cannot see the sky; one good fix means it can again. */
+    private fun updateIndoors(accuracyM: Float) {
+        if (accuracyM > INDOOR_ACCURACY_M) poorFixStreak++ else if (accuracyM <= OUTDOOR_ACCURACY_M) poorFixStreak = 0
+        val now = poorFixStreak >= 3
+        if (now != indoors) {
+            indoors = now
+            DiagLog.d(TAG, if (now) "Fixes are poor; treating as indoors" else "Good fix; treating as outdoors")
+            reconsiderProfile()
         }
     }
 
-    private fun onActivity(state: MotionState) {
-        Log.d(TAG, "Activity transition: $state")
+    // ---- motion evidence -------------------------------------------------------------------
+
+    private fun onActivity(state: MotionState, confidence: Int, periodic: Boolean) {
+        if (periodic) {
+            if (confidence < PERIODIC_MIN_CONFIDENCE || state == recognizedState) return
+            DiagLog.d(TAG, "Periodic activity: ${state.label} ($confidence%)")
+        } else {
+            DiagLog.d(TAG, "Activity transition: ${state.label}")
+        }
         setRecognized(state)
     }
 
     /** The significant-motion sensor is hardware evidence: release the anchor and start searching. */
     private fun onSensorMotion() {
-        Log.d(TAG, "Significant motion while ${recognizedState.label}")
         if (recognizedState == MotionState.STILL || recognizedState == MotionState.UNKNOWN) {
+            DiagLog.d(TAG, "Significant motion while ${recognizedState.label}")
             setRecognized(MotionState.MOVING)
         }
     }
 
-    /**
-     * A geofence exit can be indoor scatter, so it is only a hint: poll at high accuracy for a
-     * while and let the anchor decide from the fixes. If nothing coherent shows up, go back to sleep.
-     */
-    private fun onGeofenceExit() {
-        if (recognizedState != MotionState.STILL) return
-        Log.d(TAG, "Geofence exit while still; probing")
-        probeUntilMs = SystemClock.elapsedRealtime() + PROBE_MS
-        reconsiderProfile(force = true)
-        lifecycleScope.launch {
-            delay(PROBE_MS)
-            if (recognizedState == MotionState.STILL) {
-                // Re-centre the fence on the anchor; the next still fix re-arms it.
-                stillWatcher.disarm()
-                reconsiderProfile(force = true)
-            }
+    /** A burst of steps while still means we are walking, whatever the fixes say. */
+    private fun onSteps(recentCount: Int) {
+        if (recognizedState == MotionState.STILL && recentCount >= STEPS_TO_RELEASE) {
+            DiagLog.d(TAG, "$recentCount steps in ${StepMonitor.WINDOW_MS / 1000} s while still")
+            setRecognized(MotionState.WALKING)
         }
     }
 
     private fun setRecognized(state: MotionState) {
+        if (state == recognizedState) return
         recognizedState = state
+        settle.reset()
         if (state != MotionState.STILL) {
-            quietSinceMs = null
-            probeUntilMs = 0L
             anchor.clear()
-            stillWatcher.disarm()
+            motionWatcher.disarm()
         }
         tripDetector.onMotion(state)?.let { event -> lifecycleScope.launch { handleTripEvent(event) } }
         val speed = tracker.latestFix.value?.speedMps ?: 0f
@@ -320,13 +353,11 @@ class TrackingService : LifecycleService() {
     }
 
     private fun reconsiderProfile(force: Boolean = false) {
-        val base = LocationProfile.forState(tracker.motionState.value, tracker.uiVisible.value)
-        val probing = base == LocationProfile.STILL && SystemClock.elapsedRealtime() < probeUntilMs
-        val profile = if (probing) LocationProfile.SEARCHING else base
+        val profile = LocationProfile.forState(tracker.motionState.value, tracker.uiVisible.value, indoors)
         if (force || profile != tracker.profile.value) {
             tracker.profile.value = profile
             engine.applyProfile(profile)
-            Log.d(TAG, "Profile -> ${profile.label}")
+            DiagLog.d(TAG, "Profile -> ${profile.label}")
         }
     }
 
@@ -338,7 +369,7 @@ class TrackingService : LifecycleService() {
                 currentTripId = repo.startTrip(event.trip)
                 tripSamplesSincePersist = 0
                 tracker.currentTrip.value = event.trip
-                Log.i(TAG, "Trip started")
+                DiagLog.i(TAG, "Trip started")
             }
             is TripDetector.Event.Updated -> {
                 tracker.currentTrip.value = event.trip
@@ -351,7 +382,7 @@ class TrackingService : LifecycleService() {
                 currentTripId?.let { repo.updateTrip(it, event.trip, ended = true) }
                 currentTripId = null
                 tracker.currentTrip.value = null
-                Log.i(TAG, "Trip ended: %.1f km".format(event.trip.distanceM / 1000))
+                DiagLog.i(TAG, "Trip ended: %.1f km".format(event.trip.distanceM / 1000))
                 UploadWorker.enqueueNow(this)
             }
         }
@@ -363,7 +394,7 @@ class TrackingService : LifecycleService() {
      * Push fixes as they happen instead of waiting for the 15 minute batch. Throttled so a
      * 1 Hz drive does not become 3600 requests an hour; while still, fixes are a minute apart anyway.
      */
-    private fun maybeLiveUpload(@Suppress("UNUSED_PARAMETER") fix: TrackedFix) {
+    private fun maybeLiveUpload() {
         if (!liveSettings.uploadEnabled || liveSettings.serverUrl.isBlank()) return
         val gap = if (liveSettings.uploadMode == UploadMode.OWNTRACKS) LIVE_GAP_OWNTRACKS_MS else LIVE_GAP_BATCH_MS
         val now = SystemClock.elapsedRealtime()
@@ -389,36 +420,49 @@ class TrackingService : LifecycleService() {
         private const val TAG = "TrackingService"
         const val ACTION_START = "com.pixeltek.windhover.action.START"
         const val ACTION_STOP = "com.pixeltek.windhover.action.STOP"
-        const val ACTION_MOTION_TRIGGER = "com.pixeltek.windhover.action.MOTION_TRIGGER"
         const val ACTION_ACTIVITY = "com.pixeltek.windhover.action.ACTIVITY"
         const val EXTRA_MOTION_STATE = "motion_state"
+        const val EXTRA_CONFIDENCE = "confidence"
+        const val EXTRA_PERIODIC = "periodic"
 
         private const val NOTIFICATION_THROTTLE_MS = 5_000L
-        private const val QUIET_TO_STILL_MS = 3 * 60_000L
-        private const val PROBE_MS = 2 * 60_000L
         private const val LIVE_GAP_BATCH_MS = 2_000L
         /** Every message becomes a Home Assistant recorder row, so be gentler there. */
         private const val LIVE_GAP_OWNTRACKS_MS = 5_000L
         private const val TRIP_PERSIST_EVERY = 10
         /** 8 m/s is about 29 km/h. Nothing on foot sustains that. */
         private const val VEHICLE_SPEED_MPS = 8f
+        private const val PERIODIC_MIN_CONFIDENCE = 75
+        private const val STEPS_TO_RELEASE = 6
+        private const val INDOOR_ACCURACY_M = 40f
+        private const val OUTDOOR_ACCURACY_M = 30f
 
         /**
          * Starts (or delivers an action to) the service. Returns false if Android refused; in that case
          * a "tap to resume" notification is posted so the user can bring the app forward.
          */
-        fun start(context: Context, action: String = ACTION_START, motion: MotionState? = null): Boolean {
+        fun start(
+            context: Context,
+            action: String = ACTION_START,
+            motion: MotionState? = null,
+            confidence: Int = 100,
+            periodic: Boolean = false,
+        ): Boolean {
             if (!Permissions.canTrack(context)) {
-                Log.w(TAG, "Not starting: location permission missing")
+                DiagLog.w(TAG, "Not starting: location permission missing")
                 return false
             }
             val intent = Intent(context, TrackingService::class.java).setAction(action)
-            motion?.let { intent.putExtra(EXTRA_MOTION_STATE, it.name) }
+            motion?.let {
+                intent.putExtra(EXTRA_MOTION_STATE, it.name)
+                intent.putExtra(EXTRA_CONFIDENCE, confidence)
+                intent.putExtra(EXTRA_PERIODIC, periodic)
+            }
             return try {
                 ContextCompat.startForegroundService(context, intent)
                 true
             } catch (e: Exception) {
-                Log.w(TAG, "Could not start service (app in background?)", e)
+                DiagLog.w(TAG, "Could not start service (app in background?)", e)
                 Notifications.showResumePrompt(context)
                 false
             }
@@ -427,7 +471,7 @@ class TrackingService : LifecycleService() {
         fun stop(context: Context) {
             runCatching {
                 context.startService(Intent(context, TrackingService::class.java).setAction(ACTION_STOP))
-            }.onFailure { Log.w(TAG, "stop failed", it) }
+            }.onFailure { DiagLog.w(TAG, "stop failed", it) }
         }
 
         /** For broadcast receivers: forward an event if tracking is (or should be) running. */
@@ -436,11 +480,13 @@ class TrackingService : LifecycleService() {
             pending: BroadcastReceiver.PendingResult,
             action: String,
             motion: MotionState? = null,
+            confidence: Int = 100,
+            periodic: Boolean = false,
         ) {
             Graph.appScope.launch {
                 try {
                     if (Graph.tracker.serviceRunning.value || Graph.settings.get().trackingEnabled) {
-                        start(context, action, motion)
+                        start(context, action, motion, confidence, periodic)
                     }
                 } finally {
                     pending.finish()

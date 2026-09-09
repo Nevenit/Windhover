@@ -25,6 +25,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -36,6 +37,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pixeltek.windhover.data.MapStyle
 import com.pixeltek.windhover.data.UploadMode
 import com.pixeltek.windhover.sync.UploadStatus
+import com.pixeltek.windhover.util.DiagnosticsExporter
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,6 +58,9 @@ fun SettingsScreen(vm: MainViewModel, onOpenPermissions: () -> Unit) {
     var customStyleUrl by remember(settings.customStyleUrl) { mutableStateOf(settings.customStyleUrl) }
     var styleMenuOpen by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
+    var exporting by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     Column(
         Modifier
@@ -177,6 +183,26 @@ fun SettingsScreen(vm: MainViewModel, onOpenPermissions: () -> Unit) {
         Text("Data", style = MaterialTheme.typography.titleMedium)
         Text("Device ID: ${settings.deviceId.ifBlank { "—" }}", style = MaterialTheme.typography.bodySmall)
         OutlinedButton(onClick = { confirmClear = true }) { Text("Delete all samples and trips") }
+
+        Text("Diagnostics", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Shares a zip with every stored sample and trip, your settings (token removed), device info " +
+                "and the app's own log. Nothing is sent anywhere until you pick an app in the share sheet.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedButton(
+            enabled = !exporting,
+            onClick = {
+                exporting = true
+                scope.launch {
+                    try {
+                        DiagnosticsExporter.share(context, DiagnosticsExporter.export(context))
+                    } finally {
+                        exporting = false
+                    }
+                }
+            },
+        ) { Text(if (exporting) "Preparing…" else "Export diagnostics") }
     }
 
     if (confirmClear) {

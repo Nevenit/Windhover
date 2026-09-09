@@ -5,13 +5,13 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.Build
-import android.util.Log
 import com.pixeltek.windhover.data.LocationRepository
 import com.pixeltek.windhover.data.LocationSample
 import com.pixeltek.windhover.data.SettingsRepository
 import com.pixeltek.windhover.data.TrackerSettings
 import com.pixeltek.windhover.data.UploadMode
 import com.pixeltek.windhover.location.TrackerState
+import com.pixeltek.windhover.util.DiagLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -55,7 +55,7 @@ class Uploader(
                     UploadMode.OWNTRACKS -> uploadLatestAsOwnTracks(s)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Upload failed", e)
+                DiagLog.w(TAG, "Upload failed", e)
                 UploadStatus.Failure(e.message ?: e.javaClass.simpleName, System.currentTimeMillis())
             }
         }
